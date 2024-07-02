@@ -1,13 +1,17 @@
+use std::env;
+use std::ffi::{c_char, CString};
 use std::mem::{self, zeroed};
 use std::os::raw::c_void;
+use std::os::unix::ffi::OsStringExt;
 use std::process::exit;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pyo3::ffi::{
-    PyConfig, PyConfig_Clear, PyConfig_InitPythonConfig, PyMemAllocatorEx, PyMem_GetAllocator,
-    PyMem_SetAllocator, PyPreConfig, PyPreConfig_InitPythonConfig, PyStatus, PyStatus_Exception,
-    PyStatus_IsExit, Py_ExitStatusException, Py_InitializeFromConfig, Py_PreInitialize, Py_RunMain,
+    PyConfig, PyConfig_Clear, PyConfig_InitPythonConfig, PyConfig_SetBytesArgv, PyMemAllocatorEx,
+    PyMem_GetAllocator, PyMem_SetAllocator, PyPreConfig, PyPreConfig_InitPythonConfig, PyStatus,
+    PyStatus_Exception, PyStatus_IsExit, Py_ExitStatusException, Py_InitializeFromConfig,
+    Py_PreInitializeFromBytesArgs, Py_RunMain,
 };
 
 struct OrigPymallocAllocators {
@@ -130,8 +134,14 @@ fn main() {
         let mut preconfig: PyPreConfig = mem::zeroed();
         let mut config: PyConfig = mem::zeroed();
 
+        let args = env::args_os();
+        let argc = args.len().try_into().unwrap();
+        let mut argv: Vec<*mut c_char> = args
+            .map(|s| CString::new(s.into_vec()).unwrap().into_raw())
+            .collect();
+
         PyPreConfig_InitPythonConfig(&mut preconfig);
-        status = Py_PreInitialize(&preconfig);
+        status = Py_PreInitializeFromBytesArgs(&preconfig, argc, argv.as_mut_ptr());
         if PyStatus_Exception(status) != 0 {
             if PyStatus_IsExit(status) != 0 {
                 exit(status.exitcode);
@@ -142,6 +152,7 @@ fn main() {
         setup_allocators();
 
         PyConfig_InitPythonConfig(&mut config);
+        PyConfig_SetBytesArgv(&mut config, argc, argv.as_mut_ptr() as *mut *const i8);
         status = Py_InitializeFromConfig(&config);
         if PyStatus_Exception(status) != 0 {
             PyConfig_Clear(&mut config);
@@ -153,44 +164,15 @@ fn main() {
 
         let res = Py_RunMain();
 
-        println!("Mallocs: {}", MALLOCS.load(Ordering::SeqCst));
-        println!("Callocs: {}", CALLOCS.load(Ordering::SeqCst));
-        println!("Reallocs: {}", REALLOCS.load(Ordering::SeqCst));
-        println!("Frees: {}", FREES.load(Ordering::SeqCst));
-        println!("Raw: {}", RAW.load(Ordering::SeqCst));
-        println!("Mem: {}", MEM.load(Ordering::SeqCst));
-        println!("Obj: {}", OBJ.load(Ordering::SeqCst));
-        println!("Unk: {}", UNK.load(Ordering::SeqCst));
+        eprintln!("Mallocs: {}", MALLOCS.load(Ordering::SeqCst));
+        eprintln!("Callocs: {}", CALLOCS.load(Ordering::SeqCst));
+        eprintln!("Reallocs: {}", REALLOCS.load(Ordering::SeqCst));
+        eprintln!("Frees: {}", FREES.load(Ordering::SeqCst));
+        eprintln!("Raw: {}", RAW.load(Ordering::SeqCst));
+        eprintln!("Mem: {}", MEM.load(Ordering::SeqCst));
+        eprintln!("Obj: {}", OBJ.load(Ordering::SeqCst));
+        eprintln!("Unk: {}", UNK.load(Ordering::SeqCst));
 
         exit(res);
     }
-    // let res = Python::with_gil(|py| {
-    //     unsafe { setup_allocators() };
-    //     // let sys = py.import_bound("sys")?;
-    //     // let version: String = sys.getattr("version")?.extract()?;
-    //     //
-    //     // let locals = [("os", py.import_bound("os")?)].into_py_dict_bound(py);
-    //     // let code = "os.getenv('USER') or os.getenv('USERNAME') or 'Unknown'";
-    //     // let user: String = py.eval_bound(code, None, Some(&locals))?.extract()?;
-    //     //
-    //     // println!("Hello {}, I'm Python {}", user, version);
-    //     let gevent = py.import_bound("gevent.monkey")?;
-    //     gevent.getattr("patch_all")?.call0()?;
-    //
-    //     println!("Importing discord.flask.app");
-    //     let discord_flask_app = py.import_bound("discord.flask.app")?;
-    //     println!("Imported discord_flask.app");
-    //     let app_instance_fn = discord_flask_app.getattr("app_instance")?;
-    //     println!("Creating app instance");
-    //     let app = app_instance_fn.call0()?;
-    //     println!("Created app instance, {:#?}", app);
-    //     Ok(())
-    // });
-    //
-    // unsafe {
-    //     println!("Mallocs: {}", MALLOCS.load(Ordering::SeqCst));
-    //     println!("Callocs: {}", CALLOCS.load(Ordering::SeqCst));
-    //     println!("Reallocs: {}", REALLOCS.load(Ordering::SeqCst));
-    //     println!("Frees: {}", FREES.load(Ordering::SeqCst));
-    // }
 }
