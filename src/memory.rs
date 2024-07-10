@@ -66,9 +66,12 @@ extern "C" fn pymalloc_free(ctx: *mut c_void, ptr: *mut c_void) {
 
 pub fn print_metrics() {
     unsafe {
-        eprintln!("Mallocs: {}", MALLOCS.load(Ordering::SeqCst));
-        eprintln!("Callocs: {}", CALLOCS.load(Ordering::SeqCst));
+        let mallocs = MALLOCS.load(Ordering::SeqCst);
+        let callocs = CALLOCS.load(Ordering::SeqCst);
+        eprintln!("Mallocs: {}", mallocs);
+        eprintln!("Callocs: {}", callocs);
         eprintln!("Reallocs: {}", REALLOCS.load(Ordering::SeqCst));
+        eprintln!("Total allocs: {}", mallocs + callocs);
         eprintln!("Frees: {}", FREES.load(Ordering::SeqCst));
         eprintln!("Raw: {}", RAW.load(Ordering::SeqCst));
         eprintln!("Mem: {}", MEM.load(Ordering::SeqCst));
