@@ -3,6 +3,8 @@ use std::os::raw::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use lazy_static::lazy_static;
+use prometheus::{register_int_counter_vec, IntCounterVec};
 use pyo3::ffi::{PyMemAllocatorEx, PyMem_GetAllocator, PyMem_SetAllocator};
 
 struct OrigPymallocAllocators {
@@ -13,29 +15,35 @@ struct OrigPymallocAllocators {
 
 static mut ORIG_PYMALLOC_ALLOCATORS: OrigPymallocAllocators = unsafe { mem::zeroed() };
 
-static mut MALLOCS: AtomicUsize = AtomicUsize::new(0);
-static mut CALLOCS: AtomicUsize = AtomicUsize::new(0);
-static mut REALLOCS: AtomicUsize = AtomicUsize::new(0);
-static mut FREES: AtomicUsize = AtomicUsize::new(0);
+lazy_static! {
+    static ref MALLOC_COUNTER: IntCounterVec =
+        register_int_counter_vec!("mallocs", "help", &["allocator"]).unwrap();
+    static ref CALLOC_COUNTER: IntCounterVec =
+        register_int_counter_vec!("callocs", "help", &["allocator"]).unwrap();
+    static ref REALLOC_COUNTER: IntCounterVec =
+        register_int_counter_vec!("reallocs", "help", &["allocator"]).unwrap();
+    static ref FREE_COUNTER: IntCounterVec =
+        register_int_counter_vec!("frees", "help", &["allocator"]).unwrap();
+}
 
-static mut RAW: AtomicUsize = AtomicUsize::new(0);
-static mut MEM: AtomicUsize = AtomicUsize::new(0);
-static mut OBJ: AtomicUsize = AtomicUsize::new(0);
-static mut UNK: AtomicUsize = AtomicUsize::new(0);
+unsafe fn get_allocator_str(alloc: *mut PyMemAllocatorEx) -> &'static str {
+    if alloc == &mut ORIG_PYMALLOC_ALLOCATORS.raw {
+        "raw"
+    } else if alloc == &mut ORIG_PYMALLOC_ALLOCATORS.mem {
+        "mem"
+    } else if alloc == &mut ORIG_PYMALLOC_ALLOCATORS.obj {
+        "obj"
+    } else {
+        "unk"
+    }
+}
 
 extern "C" fn pymalloc_malloc(ctx: *mut c_void, size: usize) -> *mut c_void {
     unsafe {
         let alloc: *mut PyMemAllocatorEx = ctx as *mut PyMemAllocatorEx;
-        if alloc == &mut ORIG_PYMALLOC_ALLOCATORS.raw {
-            RAW.fetch_add(1, Ordering::SeqCst);
-        } else if alloc == &mut ORIG_PYMALLOC_ALLOCATORS.mem {
-            MEM.fetch_add(1, Ordering::SeqCst);
-        } else if alloc == &mut ORIG_PYMALLOC_ALLOCATORS.obj {
-            OBJ.fetch_add(1, Ordering::SeqCst);
-        } else {
-            UNK.fetch_add(1, Ordering::SeqCst);
-        }
-        MALLOCS.fetch_add(1, Ordering::SeqCst);
+        MALLOC_COUNTER
+            .with_label_values(&[get_allocator_str(alloc)])
+            .inc();
         return (*alloc).malloc.unwrap()(ctx, size);
     };
 }
@@ -43,7 +51,9 @@ extern "C" fn pymalloc_malloc(ctx: *mut c_void, size: usize) -> *mut c_void {
 extern "C" fn pymalloc_calloc(ctx: *mut c_void, nelem: usize, elsize: usize) -> *mut c_void {
     unsafe {
         let alloc: *mut PyMemAllocatorEx = ctx as *mut PyMemAllocatorEx;
-        CALLOCS.fetch_add(1, Ordering::SeqCst);
+        CALLOC_COUNTER
+            .with_label_values(&[get_allocator_str(alloc)])
+            .inc();
         return (*alloc).calloc.unwrap()(ctx, nelem, elsize);
     };
 }
@@ -51,7 +61,9 @@ extern "C" fn pymalloc_calloc(ctx: *mut c_void, nelem: usize, elsize: usize) -> 
 extern "C" fn pymalloc_realloc(ctx: *mut c_void, ptr: *mut c_void, size: usize) -> *mut c_void {
     unsafe {
         let alloc: *mut PyMemAllocatorEx = ctx as *mut PyMemAllocatorEx;
-        REALLOCS.fetch_add(1, Ordering::SeqCst);
+        REALLOC_COUNTER
+            .with_label_values(&[get_allocator_str(alloc)])
+            .inc();
         return (*alloc).realloc.unwrap()(ctx, ptr, size);
     };
 }
@@ -59,25 +71,11 @@ extern "C" fn pymalloc_realloc(ctx: *mut c_void, ptr: *mut c_void, size: usize) 
 extern "C" fn pymalloc_free(ctx: *mut c_void, ptr: *mut c_void) {
     unsafe {
         let alloc: *mut PyMemAllocatorEx = ctx as *mut PyMemAllocatorEx;
-        FREES.fetch_add(1, Ordering::SeqCst);
+        FREE_COUNTER
+            .with_label_values(&[get_allocator_str(alloc)])
+            .inc();
         return (*alloc).free.unwrap()(ctx, ptr);
     };
-}
-
-pub fn print_metrics() {
-    unsafe {
-        let mallocs = MALLOCS.load(Ordering::SeqCst);
-        let callocs = CALLOCS.load(Ordering::SeqCst);
-        eprintln!("Mallocs: {}", mallocs);
-        eprintln!("Callocs: {}", callocs);
-        eprintln!("Reallocs: {}", REALLOCS.load(Ordering::SeqCst));
-        eprintln!("Total allocs: {}", mallocs + callocs);
-        eprintln!("Frees: {}", FREES.load(Ordering::SeqCst));
-        eprintln!("Raw: {}", RAW.load(Ordering::SeqCst));
-        eprintln!("Mem: {}", MEM.load(Ordering::SeqCst));
-        eprintln!("Obj: {}", OBJ.load(Ordering::SeqCst));
-        eprintln!("Unk: {}", UNK.load(Ordering::SeqCst));
-    }
 }
 
 pub unsafe fn setup_allocators() {
